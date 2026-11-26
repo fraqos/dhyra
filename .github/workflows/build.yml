@@ -179,7 +179,7 @@ jobs:
           cache-provider: basic
           validate-wrappers: false
 
-      - name: Generate and verify the standard Gradle Wrapper
+      - name: Generate and verify the standard Gradle Wrapper (minimal valid build)
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
@@ -189,11 +189,23 @@ jobs:
           EXPECTED_GRADLE_SHA256='bafc141b619ad6350fd975fc903156dd5c151998cc8b058e8c1044ab5f7b031f'
           EXPECTED_WRAPPER_JAR_SHA256='497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7'
 
-          # Generate the Wrapper in an empty temporary Gradle project. This avoids
-          # configuring dhyra's Android/Kotlin plugins during bootstrap, before the
-          # Wrapper is available. The temporary Wrapper is then copied into dhyra.
+          # Create a real, minimal Gradle build before invoking the `wrapper` task.
+          # Gradle 9 refuses to run a task in an empty directory: it must first
+          # discover settings.gradle(.kts) or a build file. This isolated bootstrap
+          # project deliberately contains no Android/Kotlin plugins, so it does not
+          # configure the dhyra build while generating the standard Wrapper files.
           TEMP_WRAPPER_DIR="$(mktemp -d)"
           trap 'rm -rf "$TEMP_WRAPPER_DIR"' EXIT
+
+          cat > "$TEMP_WRAPPER_DIR/settings.gradle" <<'GROOVY'
+          rootProject.name = 'dhyra-gradle-wrapper-bootstrap'
+          GROOVY
+          cat > "$TEMP_WRAPPER_DIR/build.gradle" <<'GROOVY'
+          // Intentionally empty: the built-in Gradle `wrapper` task is all we need.
+          GROOVY
+
+          test -s "$TEMP_WRAPPER_DIR/settings.gradle"
+          test -s "$TEMP_WRAPPER_DIR/build.gradle"
 
           INSTALLED_GRADLE_VERSION="$(gradle --version | sed -n 's/^Gradle //p' | head -n 1)"
           if [[ "$INSTALLED_GRADLE_VERSION" != "$GRADLE_VERSION" ]]; then
@@ -201,6 +213,8 @@ jobs:
             exit 1
           fi
 
+          # Explicitly target the temporary project that now has a valid Gradle
+          # settings/build definition. The wrapper task writes all files there.
           gradle --no-daemon --stacktrace --project-dir "$TEMP_WRAPPER_DIR" wrapper \
             --gradle-version "$GRADLE_VERSION" \
             --distribution-type bin \
@@ -208,6 +222,9 @@ jobs:
 
           GENERATED_WRAPPER_JAR="$TEMP_WRAPPER_DIR/gradle/wrapper/gradle-wrapper.jar"
           test -s "$GENERATED_WRAPPER_JAR"
+          test -s "$TEMP_WRAPPER_DIR/gradle/wrapper/gradle-wrapper.properties"
+          test -s "$TEMP_WRAPPER_DIR/gradlew"
+          test -s "$TEMP_WRAPPER_DIR/gradlew.bat"
           ACTUAL_WRAPPER_JAR_SHA256="$(sha256sum "$GENERATED_WRAPPER_JAR" | awk '{print $1}')"
           if [[ "$ACTUAL_WRAPPER_JAR_SHA256" != "$EXPECTED_WRAPPER_JAR_SHA256" ]]; then
             echo "ERROR: Generated Gradle Wrapper JAR checksum mismatch." >&2
